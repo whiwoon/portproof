@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="portproof-smoke" startstr="2026-06-24">
+  <host>
+    <status state="up"/>
+    <address addr="192.168.16.136" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH"/></port>
+      <port protocol="tcp" portid="2323"><state state="open"/><service name="telnet" product="Ground telnet evidence lab"/></port>
+      <port protocol="tcp" portid="2121"><state state="open"/><service name="ftp" product="pyftpdlib"/></port>
+      <port protocol="tcp" portid="8080"><state state="open"/><service name="http" product="Ground HTTP Evidence Lab"/></port>
+      <port protocol="tcp" portid="8443"><state state="open"/><service name="http" tunnel="ssl" product="Ground HTTPS Evidence Lab"/></port>
+    </ports>
+  </host>
+</nmaprun>

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+PortProof-*/
+test-artifacts-*/
+ground-smoke-*.xml
+.DS_Store
