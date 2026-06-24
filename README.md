@@ -53,10 +53,10 @@ PortProof-YYYYMMDD-HHMMSS\
 
 PortProof currently captures these open services from Nmap XML:
 
-- SSH (`ssh`, port 22): opens `ssh.exe` and captures the interactive authentication prompt screen. A disposable username (`portproof`) is used so the evidence shows the login/password prompt instead of only a TCP banner.
+- SSH (`ssh`, port 22): opens `ssh.exe` as `root@host` and captures the interactive `password:` prompt screen. The capture is intended to show the password prompt, not a TCP banner.
 - Telnet (`telnet`, ports 23/2323): opens a TCP console session and captures the login prompt/banner when the service provides one.
-- FTP (`ftp`, ports 21/2121): runs an anonymous FTP directory listing with `curl.exe --list-only` and captures the visible file list output.
-- SMB (`microsoft-ds`, `netbios-ssn`, ports 445/139): runs `net view \\host` to capture the share list, then attempts a PowerShell `Get-ChildItem` listing on the first listed disk share. If listing is denied or times out, a concise failure/timeout message is captured instead of verbose PowerShell errors.
+- FTP (`ftp`, ports 21/2121): attempts an anonymous FTP directory listing and captures only when a visible file list is returned. Denied or unavailable anonymous listing is recorded as skipped without a screenshot.
+- SMB (`microsoft-ds`, `netbios-ssn`, ports 445/139): runs `net view \\host` and then attempts a PowerShell `Get-ChildItem` listing on the first listed disk share. PortProof captures only when a visible file list is returned; denied, empty, timed-out, or unavailable listings are recorded as skipped without a screenshot.
 - HTTP (`http`, ports 80/8080): Microsoft Edge screenshot.
 - HTTPS (`ssl/http`, `https`, ports 443/8443): Microsoft Edge screenshot with certificate errors ignored for lab capture.
 
@@ -87,5 +87,7 @@ PortProof-YYYYMMDD-HHMMSS/
 - Console evidence windows are restored, moved to a predictable position, resized before capture, and the capture JSON records the final rectangle plus whether `MoveWindow` succeeded.
 - HTTP/HTTPS uses Edge. If GUI capture is black in VMware or remote sessions, PortProof falls back to Edge headless screenshots.
 - CSV uses UTF-8 with BOM for easier Excel opening.
+- The main terminal prints progress as `[current/total] CAPTURE start ...`, `CAPTURED ...`, `SKIPPED ...`, or `FAILED ...`.
+- Console capture windows are closed automatically after capture or skip so evidence runs do not leave many `cmd.exe` windows behind.
 - XLSX is generated with Python standard-library ZIP/XML code, so no `openpyxl` dependency is needed.
 - Commands are intentionally simple and suited for lab proof, not credentialed enumeration.

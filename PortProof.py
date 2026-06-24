@@ -776,6 +776,18 @@ def launch_cmd(args: argparse.Namespace) -> None:
     proc = subprocess.Popen(["cmd.exe", "/k", str(runner)], creationflags=creationflags)
     time.sleep(args.wait)
 
+    marker = Path(args.require_marker) if getattr(args, "require_marker", "") else None
+    if marker is not None and not marker.exists():
+        completed = close_process_tree(proc.pid)
+        print(f"cmd_pid={proc.pid}")
+        print(f"title={title}")
+        print(f"runner={runner}")
+        print(f"command_file={command_file}")
+        print(f"skipped_reason=required evidence marker was not created: {marker}")
+        print("cmd_close_attempted=true")
+        print(f"cmd_close_returncode={completed.returncode}")
+        return
+
     result = run_powershell_capture(
         helper,
         outfile,
@@ -784,6 +796,7 @@ def launch_cmd(args: argparse.Namespace) -> None:
         timeout_seconds=args.capture_timeout,
     )
     evidence_paths = copy_evidence_paths(outfile, out_dir, args)
+    completed = close_process_tree(proc.pid)
 
     print(f"cmd_pid={proc.pid}")
     print(f"title={title}")
@@ -793,6 +806,12 @@ def launch_cmd(args: argparse.Namespace) -> None:
         print(f"screenshot_{index}={path}")
     if result:
         print(result)
+    print("cmd_close_attempted=true")
+    print(f"cmd_close_returncode={completed.returncode}")
+    if completed.stdout.strip():
+        print(f"cmd_close_stdout={completed.stdout.strip()}")
+    if completed.stderr.strip():
+        print(f"cmd_close_stderr={completed.stderr.strip()}")
 
 
 
@@ -900,7 +919,7 @@ def powershell_file_command(commands_dir: Path, host: str, port: str, service: s
     return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{helper_path}"'
 
 
-def command_for_service(host: str, port: str, service: str, commands_dir: Path) -> str:
+def command_for_service(host: str, port: str, service: str, commands_dir: Path, marker_file: Path | None = None) -> str:
     if service == "ssh":
         known_hosts = commands_dir / "ssh_known_hosts"
         return (
@@ -911,15 +930,34 @@ def command_for_service(host: str, port: str, service: str, commands_dir: Path) 
             "-o PubkeyAuthentication=no "
             "-o BatchMode=no "
             "-o ConnectionAttempts=1 "
-            f"-p {port} portproof@{host}"
+            f"-p {port} root@{host}"
         )
     if service == "telnet":
         ps = f"$c=New-Object Net.Sockets.TcpClient; $c.ReceiveTimeout=5000; $c.Connect('{host}',{port}); 'TELNET TCP {port} connected'; $s=$c.GetStream(); $deadline=(Get-Date).AddSeconds(5); while(-not $s.DataAvailable -and (Get-Date) -lt $deadline){{Start-Sleep -Milliseconds 100}}; if($s.DataAvailable){{$b=New-Object byte[] 1024; $n=$s.Read($b,0,$b.Length); [Text.Encoding]::ASCII.GetString($b,0,$n)}} else {{'No login prompt or banner before timeout'}}; Start-Sleep -Seconds 60; $c.Close()"
         return powershell_file_command(commands_dir, host, port, service, ps)
     if service == "ftp":
-        return f"curl.exe --connect-timeout 10 --max-time 30 --user anonymous:anonymous --list-only ftp://{host}:{port}/"
-    if service == "smb":
+        marker = str(marker_file) if marker_file else ""
         ps = rf"""
+$marker = '{marker}'
+Write-Output 'FTP anonymous file listing:'
+$output = @(& curl.exe --connect-timeout 10 --max-time 30 --user anonymous:anonymous --list-only ftp://{host}:{port}/ 2>&1)
+$exit = $LASTEXITCODE
+$listing = @($output | Where-Object {{ $_ -and ($_ -notmatch '^\s*%') }})
+if ($exit -eq 0 -and $listing.Count -gt 0) {{
+    $listing | ForEach-Object {{ Write-Output $_ }}
+    if ($marker) {{ Set-Content -Path $marker -Value 'ready' -Encoding ASCII }}
+    Start-Sleep -Seconds 60
+}} else {{
+    Write-Output 'FTP anonymous listing unavailable; skipping evidence capture.'
+    $output | Select-Object -First 6 | ForEach-Object {{ Write-Output $_ }}
+    Start-Sleep -Seconds 3
+}}
+""".strip()
+        return powershell_file_command(commands_dir, host, port, service, ps)
+    if service == "smb":
+        marker = str(marker_file) if marker_file else ""
+        ps = rf"""
+$marker = '{marker}'
 Write-Output 'SMB share listing:'
 $netViewTimeoutSeconds = 8
 $netViewJob = Start-Job -ScriptBlock {{
@@ -958,6 +996,8 @@ if ($share) {{
         $items = Get-ChildItem -LiteralPath $unc -Force -ErrorAction Stop
         if ($items) {{
             $items | Select-Object Mode, LastWriteTime, Length, Name | Format-Table -AutoSize | Out-String -Width 200 | ForEach-Object {{ Write-Output $_ }}
+            if ($marker) {{ Set-Content -Path $marker -Value 'ready' -Encoding ASCII }}
+            Start-Sleep -Seconds 60
         }} else {{
             Write-Output '(share is accessible but empty)'
         }}
@@ -1238,12 +1278,16 @@ def capture_row(out_dir: Path, commands_dir: Path, row: dict) -> tuple[dict, str
             "30",
         ]
     else:
+        marker_path = None
+        if service in {"ftp", "smb"}:
+            marker_path = commands_dir / f"{sanitize_evidence_part(host)}_{sanitize_evidence_part(port)}_{sanitize_evidence_part(service)}.ready"
+            marker_path.unlink(missing_ok=True)
         argv = [
             "cmd",
             "--title",
             f"{service}-{port}",
             "--command",
-            command_for_service(host, port, service, commands_dir),
+            command_for_service(host, port, service, commands_dir, marker_path),
             "--out",
             str(out_dir),
             "--host",
@@ -1257,8 +1301,15 @@ def capture_row(out_dir: Path, commands_dir: Path, row: dict) -> tuple[dict, str
             "--capture-timeout",
             "25",
         ]
+        if marker_path is not None:
+            argv.extend(["--require-marker", str(marker_path)])
     rc, output = run_capture_subcommand(argv)
     shot = extract_screenshot_path(output)
+    if "skipped_reason=" in output and not shot:
+        updated["status"] = "skipped"
+        updated["screenshot"] = ""
+        updated["notes"] = "capture skipped because required evidence was not visible"
+        return updated, output, rc
     updated["status"] = "captured" if rc == 0 and shot else "failed"
     updated["screenshot"] = str(Path(shot).relative_to(out_dir)) if shot else ""
     updated["capture_method"] = ""
@@ -1306,16 +1357,25 @@ def run_portproof(input_file: Path, filters: dict[str, set[str]] | None = None) 
     write_reports(out_dir, rows)
     append_log(consolidated_log, "loaded-targets", json.dumps(rows, indent=2))
 
+    eligible_total = sum(1 for row in rows if input_kind == "xml" or row_matches_filters(row, filters))
+    progress_index = 0
+    print(f"PortProof targets: {eligible_total}", flush=True)
+
     for index, row in enumerate(rows):
         if input_kind in {"csv", "xlsx"} and not row_matches_filters(row, filters):
             if has_active_filters(filters):
                 append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "skipped: does not match requested filters")
             continue
+        progress_index += 1
+        label = f"{row['host']}:{row['port']}/{row['service']}"
         if row.get("status") == "captured" and screenshot_exists(out_dir, row.get("screenshot", "")):
+            print(f"[{progress_index}/{eligible_total}] SKIP existing {label}", flush=True)
             append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "skipped: existing screenshot is present")
             continue
+        print(f"[{progress_index}/{eligible_total}] CAPTURE start {label}", flush=True)
         updated, output, rc = capture_row(out_dir, commands_dir, row)
         rows[index] = updated
+        print(f"[{progress_index}/{eligible_total}] {updated['status'].upper()} {label}", flush=True)
         append_log(consolidated_log, f"{updated['host']}:{updated['port']}/{updated['service']}", output)
         move_command_artifacts(out_dir, commands_dir)
         cleanup_runtime_dirs(out_dir)
@@ -1331,7 +1391,7 @@ def run_portproof(input_file: Path, filters: dict[str, set[str]] | None = None) 
     print(f"log={consolidated_log}")
     print(f"evidence_dir={evidence_dir}")
     result_rows = rows if input_kind == "xml" or not has_active_filters(filters) else filter_rows(rows, filters)
-    return 0 if all(row["status"] == "captured" for row in result_rows) else 1
+    return 0 if all(row["status"] in {"captured", "skipped"} for row in result_rows) else 1
 
 
 def build_internal_parser() -> argparse.ArgumentParser:
@@ -1361,6 +1421,7 @@ def build_internal_parser() -> argparse.ArgumentParser:
     cmd_parser.add_argument("--out", required=True)
     cmd_parser.add_argument("--wait", type=float, default=DEFAULT_WAIT_SECONDS)
     cmd_parser.add_argument("--capture-timeout", type=int, default=20)
+    cmd_parser.add_argument("--require-marker", default="")
     cmd_parser.set_defaults(func=launch_cmd)
     return parser
 
