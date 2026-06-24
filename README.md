@@ -27,7 +27,12 @@ No pip packages are required.
 
 ```powershell
 python .\PortProof.py .\scan.xml
+python .\PortProof.py .\scan.xml --ip 192.168.16.136
+python .\PortProof.py .\scan.xml --port 22 --port 445
+python .\PortProof.py .\scan.xml --service ssh,smb
 ```
+
+Filters can be combined. When combined, a row must match every filter category that was provided. For example, `--ip 192.168.16.136 --service ssh --port 22` captures only SSH on `192.168.16.136:22`.
 
 On XML input, PortProof parses the XML first and immediately creates `portproof-results.csv` and `portproof-results.xlsx` with pending rows. After each evidence capture, it updates both report files, so an interrupted run still records progress.
 
@@ -38,7 +43,7 @@ python .\PortProof.py .\PortProof-20260624-140000\portproof-results.csv
 python .\PortProof.py .\PortProof-20260624-140000\portproof-results.xlsx
 ```
 
-On CSV/XLSX input, PortProof uses the report's parent folder as the output folder. Rows whose `screenshot` value points to an existing file and whose status is `captured` are skipped; missing or failed rows are captured again and the report is updated after each capture.
+On CSV/XLSX input, PortProof uses the report's parent folder as the output folder. Rows whose `screenshot` value points to an existing file and whose status is `captured` are skipped; missing or failed rows are captured again and the report is updated after each capture. If filters are provided with CSV/XLSX input, the full report is preserved but only matching rows are considered for capture/resume.
 
 ```text
 PortProof-YYYYMMDD-HHMMSS\

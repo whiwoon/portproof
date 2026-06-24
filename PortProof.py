@@ -1146,7 +1146,50 @@ def move_command_artifacts(out_dir: Path, commands_dir: Path) -> None:
             shutil.move(str(src), str(dst))
 
 
-def load_input_rows(input_path: Path) -> tuple[Path, list[dict], str]:
+def split_filter_values(values: list[str] | None) -> set[str]:
+    result: set[str] = set()
+    for value in values or []:
+        for item in str(value).split(","):
+            item = item.strip().lower()
+            if item:
+                result.add(item)
+    return result
+
+
+def build_filters(args: argparse.Namespace) -> dict[str, set[str]]:
+    ports = split_filter_values(getattr(args, "port", None))
+    ips = split_filter_values(getattr(args, "ip", None))
+    services = {
+        normalize_service(service, "", "")
+        for service in split_filter_values(getattr(args, "service", None))
+    }
+    return {"port": ports, "ip": ips, "service": services}
+
+
+def has_active_filters(filters: dict[str, set[str]]) -> bool:
+    return any(filters.values())
+
+
+def row_matches_filters(row: dict, filters: dict[str, set[str]]) -> bool:
+    if filters["ip"] and str(row.get("host", "")).lower() not in filters["ip"]:
+        return False
+    if filters["port"] and str(row.get("port", "")).lower() not in filters["port"]:
+        return False
+    if filters["service"]:
+        service = normalize_service(str(row.get("service", "")), str(row.get("port", "")), "")
+        nmap_service = normalize_service(str(row.get("nmap_service", "")), str(row.get("port", "")), "")
+        if service not in filters["service"] and nmap_service not in filters["service"]:
+            return False
+    return True
+
+
+def filter_rows(rows: list[dict], filters: dict[str, set[str]]) -> list[dict]:
+    if not has_active_filters(filters):
+        return rows
+    return [row for row in rows if row_matches_filters(row, filters)]
+
+
+def load_input_rows(input_path: Path, filters: dict[str, set[str]]) -> tuple[Path, list[dict], str]:
     suffix = input_path.suffix.lower()
     if suffix == ".xml":
         out_dir = output_root_for(input_path)
@@ -1162,6 +1205,7 @@ def load_input_rows(input_path: Path) -> tuple[Path, list[dict], str]:
             )
             for target in parse_nmap_xml(input_path)
         ]
+        rows = filter_rows(rows, filters)
         return out_dir, rows, "xml"
     if suffix == ".csv":
         return input_path.parent, read_csv_report(input_path), "csv"
@@ -1229,14 +1273,15 @@ def capture_row(out_dir: Path, commands_dir: Path, row: dict) -> tuple[dict, str
     return updated, output, rc
 
 
-def run_portproof(input_file: Path) -> int:
+def run_portproof(input_file: Path, filters: dict[str, set[str]] | None = None) -> int:
+    filters = filters or {"port": set(), "ip": set(), "service": set()}
     input_file = input_file.expanduser().resolve()
     if not input_file.exists():
         print(f"Input file not found: {input_file}", file=sys.stderr)
         return 2
 
     try:
-        out_dir, rows, input_kind = load_input_rows(input_file)
+        out_dir, rows, input_kind = load_input_rows(input_file, filters)
     except Exception as exc:
         print(f"Could not read input: {exc}", file=sys.stderr)
         return 2
@@ -1249,7 +1294,7 @@ def run_portproof(input_file: Path) -> int:
     logs_dir.mkdir(parents=True, exist_ok=True)
     commands_dir.mkdir(parents=True, exist_ok=True)
     consolidated_log = logs_dir / "portproof-run-log.txt"
-    log_header = f"PortProof run: {timestamp()}\nInput: {input_file}\nInput kind: {input_kind}\nOutput: {out_dir}\n"
+    log_header = f"PortProof run: {timestamp()}\nInput: {input_file}\nInput kind: {input_kind}\nOutput: {out_dir}\nFilters: {json.dumps({k: sorted(v) for k, v in filters.items()})}\n"
     if consolidated_log.exists():
         with consolidated_log.open("a", encoding="utf-8", errors="replace") as f:
             f.write("\n" + log_header)
@@ -1262,6 +1307,10 @@ def run_portproof(input_file: Path) -> int:
     append_log(consolidated_log, "loaded-targets", json.dumps(rows, indent=2))
 
     for index, row in enumerate(rows):
+        if input_kind in {"csv", "xlsx"} and not row_matches_filters(row, filters):
+            if has_active_filters(filters):
+                append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "skipped: does not match requested filters")
+            continue
         if row.get("status") == "captured" and screenshot_exists(out_dir, row.get("screenshot", "")):
             append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "skipped: existing screenshot is present")
             continue
@@ -1281,7 +1330,8 @@ def run_portproof(input_file: Path) -> int:
     print(f"xlsx={out_dir / 'portproof-results.xlsx'}")
     print(f"log={consolidated_log}")
     print(f"evidence_dir={evidence_dir}")
-    return 0 if all(row["status"] == "captured" for row in rows) else 1
+    result_rows = rows if input_kind == "xml" or not has_active_filters(filters) else filter_rows(rows, filters)
+    return 0 if all(row["status"] == "captured" for row in result_rows) else 1
 
 
 def build_internal_parser() -> argparse.ArgumentParser:
@@ -1321,13 +1371,16 @@ def build_parser() -> argparse.ArgumentParser:
         description="Create or resume port evidence screenshots and CSV/Excel reports from Nmap XML, CSV, or XLSX input.",
     )
     parser.add_argument("input_file", help="Nmap XML file, or existing PortProof CSV/XLSX report to resume.")
+    parser.add_argument("--ip", action="append", help="Only capture this IP address. Repeat or use comma-separated values.")
+    parser.add_argument("--port", action="append", help="Only capture this port number. Repeat or use comma-separated values.")
+    parser.add_argument("--service", action="append", help="Only capture this service (for example ssh, telnet, ftp, smb, http, https). Repeat or use comma-separated values.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return run_portproof(Path(args.input_file))
+    return run_portproof(Path(args.input_file), build_filters(args))
 
 
 if __name__ == "__main__":
