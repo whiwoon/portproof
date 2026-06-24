@@ -922,8 +922,18 @@ foreach ($line in $netView) {{
 }}
 if ($share) {{
     Write-Output ''
-    Write-Output ('SMB file listing: \\{host}\' + $share)
-    cmd.exe /c dir \\{host}\\$share 2>&1 | ForEach-Object {{ Write-Output $_ }}
+    $unc = '\\{host}\' + $share
+    Write-Output ('SMB file listing: ' + $unc)
+    try {{
+        $items = Get-ChildItem -LiteralPath $unc -Force -ErrorAction Stop
+        if ($items) {{
+            $items | Select-Object Mode, LastWriteTime, Length, Name | Format-Table -AutoSize | Out-String -Width 200 | ForEach-Object {{ Write-Output $_ }}
+        }} else {{
+            Write-Output '(share is accessible but empty)'
+        }}
+    }} catch {{
+        Write-Output ('SMB file listing failed: ' + $_.Exception.Message)
+    }}
 }} else {{
     Write-Output ''
     Write-Output 'No disk share was listed, so file listing could not be captured.'
