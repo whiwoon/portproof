@@ -38,7 +38,11 @@ param(
     [string]$TitleContains = "",
     [int]$TimeoutSeconds = 20,
     [int]$SetForeground = 1,
-    [int]$PreferPrintWindow = 0
+    [int]$PreferPrintWindow = 0,
+    [int]$WindowX = 40,
+    [int]$WindowY = 40,
+    [int]$WindowWidth = 1200,
+    [int]$WindowHeight = 720
 )
 
 Add-Type -AssemblyName System.Drawing
@@ -211,13 +215,17 @@ if ($null -eq $window) {
     throw "No matching visible top-level window found. pid=$ProcessId process=$ProcessName titleContains='$TitleContains'"
 }
 
+$rect = New-Object WinCapNative+RECT
+$moved = $false
 if ($SetForeground -ne 0) {
     [void][WinCapNative]::ShowWindow($window.Handle, [WinCapNative]::SW_RESTORE)
+    if ($WindowWidth -gt 0 -and $WindowHeight -gt 0) {
+        $moved = [WinCapNative]::MoveWindow($window.Handle, $WindowX, $WindowY, $WindowWidth, $WindowHeight, $true)
+    }
     [void][WinCapNative]::SetForegroundWindow($window.Handle)
-    Start-Sleep -Milliseconds 350
+    Start-Sleep -Milliseconds 700
 }
 
-$rect = New-Object WinCapNative+RECT
 [void][WinCapNative]::GetWindowRect($window.Handle, [ref]$rect)
 $width = $rect.Right - $rect.Left
 $height = $rect.Bottom - $rect.Top
@@ -229,9 +237,13 @@ if ($PreferPrintWindow -ne 0) {
     # Keep browser captures in a predictable visible area. VMware/remote sessions
     # can return a successful-but-black PrintWindow bitmap for Chromium windows;
     # making the window visible before fallback screen capture improves results.
-    [void][WinCapNative]::MoveWindow($window.Handle, 0, 0, $width, $height, $true)
+    if ($WindowWidth -gt 0 -and $WindowHeight -gt 0) {
+        $moved = [WinCapNative]::MoveWindow($window.Handle, $WindowX, $WindowY, $WindowWidth, $WindowHeight, $true)
+    }
     Start-Sleep -Milliseconds 500
     [void][WinCapNative]::GetWindowRect($window.Handle, [ref]$rect)
+    $width = $rect.Right - $rect.Left
+    $height = $rect.Bottom - $rect.Top
 }
 
 function Test-BitmapMostlyBlack {
@@ -329,6 +341,11 @@ $bitmap.Dispose()
     ProcessId = $window.ProcessId
     Width = $width
     Height = $height
+    Left = $rect.Left
+    Top = $rect.Top
+    Right = $rect.Right
+    Bottom = $rect.Bottom
+    MoveWindowSucceeded = $moved
     CaptureMethod = $captureMethod
     MostlyBlack = $mostlyBlack
 } | ConvertTo-Json -Compress
@@ -740,6 +757,7 @@ def launch_cmd(args: argparse.Namespace) -> None:
             [
                 "@echo off",
                 f"title {title}",
+                "mode con cols=140 lines=40",
                 f"echo Evidence title: {title}",
                 "echo Command:",
                 f'type "{command_file}"',
@@ -877,16 +895,40 @@ def powershell_encoded(script: str) -> str:
 
 def command_for_service(host: str, port: str, service: str, commands_dir: Path) -> str:
     if service == "ssh":
-        ps = f"$c=New-Object Net.Sockets.TcpClient; $c.ReceiveTimeout=5000; $c.SendTimeout=5000; $c.Connect('{host}',{port}); $s=$c.GetStream(); Start-Sleep -Milliseconds 500; $b=New-Object byte[] 256; if($s.DataAvailable){{$n=$s.Read($b,0,$b.Length); [Text.Encoding]::ASCII.GetString($b,0,$n)}}; 'SSH TCP {port} connected'; $c.Close()"
-        return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded(ps)}"
+        known_hosts = commands_dir / "ssh_known_hosts"
+        return (
+            "ssh.exe "
+            "-o StrictHostKeyChecking=accept-new "
+            f"-o UserKnownHostsFile=\"{known_hosts}\" "
+            "-o PreferredAuthentications=password "
+            "-o PubkeyAuthentication=no "
+            "-o BatchMode=no "
+            "-o ConnectionAttempts=1 "
+            f"-p {port} portproof@{host}"
+        )
     if service == "telnet":
-        ps = f"$c=New-Object Net.Sockets.TcpClient; $c.ReceiveTimeout=5000; $c.Connect('{host}',{port}); 'TELNET TCP {port} connected'; $s=$c.GetStream(); $deadline=(Get-Date).AddSeconds(4); while(-not $s.DataAvailable -and (Get-Date) -lt $deadline){{Start-Sleep -Milliseconds 100}}; if($s.DataAvailable){{$b=New-Object byte[] 256; $n=$s.Read($b,0,$b.Length); [Text.Encoding]::ASCII.GetString($b,0,$n)}} else {{'No banner before timeout'}}; $c.Close()"
+        ps = f"$c=New-Object Net.Sockets.TcpClient; $c.ReceiveTimeout=5000; $c.Connect('{host}',{port}); 'TELNET TCP {port} connected'; $s=$c.GetStream(); $deadline=(Get-Date).AddSeconds(5); while(-not $s.DataAvailable -and (Get-Date) -lt $deadline){{Start-Sleep -Milliseconds 100}}; if($s.DataAvailable){{$b=New-Object byte[] 1024; $n=$s.Read($b,0,$b.Length); [Text.Encoding]::ASCII.GetString($b,0,$n)}} else {{'No login prompt or banner before timeout'}}; Start-Sleep -Seconds 60; $c.Close()"
         return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded(ps)}"
     if service == "ftp":
-        ps = f"$c=New-Object Net.Sockets.TcpClient; $c.ReceiveTimeout=5000; $c.Connect('{host}',{port}); $s=$c.GetStream(); Start-Sleep -Milliseconds 500; $b=New-Object byte[] 512; $n=$s.Read($b,0,$b.Length); [Text.Encoding]::ASCII.GetString($b,0,$n); 'FTP TCP {port} connected'; $c.Close()"
-        return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded(ps)}"
+        return f"curl.exe --connect-timeout 10 --max-time 30 --user anonymous:anonymous --list-only ftp://{host}:{port}/"
     if service == "smb":
-        ps = f"$r=Test-NetConnection -ComputerName {host} -Port {port} -InformationLevel Detailed; Write-Output ('ComputerName: '+$r.ComputerName); Write-Output ('RemotePort: '+$r.RemotePort); Write-Output ('TcpTestSucceeded: '+$r.TcpTestSucceeded); if($r.TcpTestSucceeded){{Write-Output 'SMB TCP {port} connected'}} else {{Write-Output 'SMB TCP {port} not reachable'}}"
+        ps = rf"""
+Write-Output 'SMB share listing:'
+$netView = cmd.exe /c net view \\{host} 2>&1
+$netView | ForEach-Object {{ Write-Output $_ }}
+$share = $null
+foreach ($line in $netView) {{
+    if ($line -match '^\s*(\S+)\s+Disk\s+') {{ $share = $Matches[1]; break }}
+}}
+if ($share) {{
+    Write-Output ''
+    Write-Output ('SMB file listing: \\{host}\' + $share)
+    cmd.exe /c dir \\{host}\\$share 2>&1 | ForEach-Object {{ Write-Output $_ }}
+}} else {{
+    Write-Output ''
+    Write-Output 'No disk share was listed, so file listing could not be captured.'
+}}
+""".strip()
         return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded(ps)}"
     ps = f"$r=Test-NetConnection -ComputerName {host} -Port {port} -InformationLevel Detailed; $r | Out-String"
     return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded(ps)}"

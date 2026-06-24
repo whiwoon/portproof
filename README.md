@@ -41,12 +41,12 @@ PortProof-YYYYMMDD-HHMMSS\
 
 PortProof currently captures these open services from Nmap XML:
 
-- SSH (`ssh`, port 22): TCP banner capture in a console screenshot
-- Telnet (`telnet`, ports 23/2323): TCP connection/banner capture
-- FTP (`ftp`, ports 21/2121): banner capture
-- SMB (`microsoft-ds`, `netbios-ssn`, ports 445/139): `Test-NetConnection` proof
-- HTTP (`http`, ports 80/8080): Microsoft Edge screenshot
-- HTTPS (`ssl/http`, `https`, ports 443/8443): Microsoft Edge screenshot with certificate errors ignored for lab capture
+- SSH (`ssh`, port 22): opens `ssh.exe` and captures the interactive authentication prompt screen. A disposable username (`portproof`) is used so the evidence shows the login/password prompt instead of only a TCP banner.
+- Telnet (`telnet`, ports 23/2323): opens a TCP console session and captures the login prompt/banner when the service provides one.
+- FTP (`ftp`, ports 21/2121): runs an anonymous FTP directory listing with `curl.exe --list-only` and captures the visible file list output.
+- SMB (`microsoft-ds`, `netbios-ssn`, ports 445/139): runs `net view \\host` to capture the share list, then attempts `dir \\host\share` on the first listed disk share to capture a file listing. If the host does not allow anonymous/guest listing, the denial/error screen is captured and logged.
+- HTTP (`http`, ports 80/8080): Microsoft Edge screenshot.
+- HTTPS (`ssl/http`, `https`, ports 443/8443): Microsoft Edge screenshot with certificate errors ignored for lab capture.
 
 Unsupported services are ignored for now.
 
@@ -71,6 +71,7 @@ PortProof-YYYYMMDD-HHMMSS/
 ## Notes
 
 - File and folder identifiers use timestamps, not random suffixes.
+- Console evidence windows are restored, moved to a predictable position, resized before capture, and the capture JSON records the final rectangle plus whether `MoveWindow` succeeded.
 - HTTP/HTTPS uses Edge. If GUI capture is black in VMware or remote sessions, PortProof falls back to Edge headless screenshots.
 - CSV uses UTF-8 with BOM for easier Excel opening.
 - XLSX is generated with Python standard-library ZIP/XML code, so no `openpyxl` dependency is needed.
