@@ -892,6 +892,14 @@ def powershell_encoded(script: str) -> str:
     return base64.b64encode(script.encode("utf-16le")).decode("ascii")
 
 
+def powershell_file_command(commands_dir: Path, host: str, port: str, service: str, script: str) -> str:
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    helper_name = f"{sanitize_evidence_part(host)}_{sanitize_evidence_part(port)}_{sanitize_evidence_part(service)}.ps1"
+    helper_path = commands_dir / helper_name
+    helper_path.write_text(script.rstrip() + "\n", encoding="utf-8-sig")
+    return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{helper_path}"'
+
+
 def command_for_service(host: str, port: str, service: str, commands_dir: Path) -> str:
     if service == "ssh":
         known_hosts = commands_dir / "ssh_known_hosts"
@@ -907,7 +915,7 @@ def command_for_service(host: str, port: str, service: str, commands_dir: Path) 
         )
     if service == "telnet":
         ps = f"$c=New-Object Net.Sockets.TcpClient; $c.ReceiveTimeout=5000; $c.Connect('{host}',{port}); 'TELNET TCP {port} connected'; $s=$c.GetStream(); $deadline=(Get-Date).AddSeconds(5); while(-not $s.DataAvailable -and (Get-Date) -lt $deadline){{Start-Sleep -Milliseconds 100}}; if($s.DataAvailable){{$b=New-Object byte[] 1024; $n=$s.Read($b,0,$b.Length); [Text.Encoding]::ASCII.GetString($b,0,$n)}} else {{'No login prompt or banner before timeout'}}; Start-Sleep -Seconds 60; $c.Close()"
-        return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded(ps)}"
+        return powershell_file_command(commands_dir, host, port, service, ps)
     if service == "ftp":
         return f"curl.exe --connect-timeout 10 --max-time 30 --user anonymous:anonymous --list-only ftp://{host}:{port}/"
     if service == "smb":
@@ -961,9 +969,9 @@ if ($share) {{
     Write-Output 'No disk share was listed, so file listing could not be captured.'
 }}
 """.strip()
-        return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded(ps)}"
+        return powershell_file_command(commands_dir, host, port, service, ps)
     ps = f"$r=Test-NetConnection -ComputerName {host} -Port {port} -InformationLevel Detailed; $r | Out-String"
-    return f"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {powershell_encoded(ps)}"
+    return powershell_file_command(commands_dir, host, port, service, ps)
 
 
 def append_log(log_path: Path, heading: str, content: str) -> None:
