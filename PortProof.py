@@ -986,7 +986,18 @@ if ($netViewCompleted) {{
 }}
 $share = $null
 foreach ($line in $netView) {{
-    if ($line -match '^\s*(\S+)\s+Disk\s+') {{ $share = $Matches[1]; break }}
+    if ($line -match 'PortProofShare') {{ $share = 'PortProofShare'; break }}
+    if ($line -match '^\s*(\S+)\s+(Disk|디스크)\s+') {{ $share = $Matches[1]; break }}
+}}
+if (-not $share) {{
+    try {{
+        $localNames = @('127.0.0.1', 'localhost', $env:COMPUTERNAME)
+        $localIps = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress)
+        if ('{host}' -in ($localNames + $localIps)) {{
+            $localShare = Get-SmbShare -Name PortProofShare -ErrorAction Stop
+            if ($localShare) {{ $share = $localShare.Name; Write-Output 'Local SMB share detected by Get-SmbShare: PortProofShare' }}
+        }}
+    }} catch {{}}
 }}
 if ($share) {{
     Write-Output ''
