@@ -39,6 +39,7 @@ param(
     [int]$TimeoutSeconds = 20,
     [int]$SetForeground = 1,
     [int]$PreferPrintWindow = 0,
+    [int]$CaptureClientArea = 0,
     [int]$WindowX = 40,
     [int]$WindowY = 40,
     [int]$WindowWidth = 1200,
@@ -74,6 +75,12 @@ public static class WinCapNative {
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
 
     [DllImport("user32.dll")]
+    public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
+
+    [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -107,6 +114,12 @@ public static class WinCapNative {
         public int Top;
         public int Right;
         public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT {
+        public int X;
+        public int Y;
     }
 
     public class WindowInfo {
@@ -233,6 +246,25 @@ if ($width -le 0 -or $height -le 0) {
     throw "Matched window has invalid size: ${width}x${height}"
 }
 
+$captureArea = "window"
+if ($CaptureClientArea -ne 0 -and $PreferPrintWindow -eq 0) {
+    $clientRect = New-Object WinCapNative+RECT
+    if ([WinCapNative]::GetClientRect($window.Handle, [ref]$clientRect)) {
+        $clientTopLeft = New-Object WinCapNative+POINT
+        $clientTopLeft.X = 0
+        $clientTopLeft.Y = 0
+        if ([WinCapNative]::ClientToScreen($window.Handle, [ref]$clientTopLeft)) {
+            $rect.Left = $clientTopLeft.X
+            $rect.Top = $clientTopLeft.Y
+            $rect.Right = $clientTopLeft.X + ($clientRect.Right - $clientRect.Left)
+            $rect.Bottom = $clientTopLeft.Y + ($clientRect.Bottom - $clientRect.Top)
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            $captureArea = "client"
+        }
+    }
+}
+
 if ($PreferPrintWindow -ne 0) {
     # Keep browser captures in a predictable visible area. VMware/remote sessions
     # can return a successful-but-black PrintWindow bitmap for Chromium windows;
@@ -347,6 +379,7 @@ $bitmap.Dispose()
     Bottom = $rect.Bottom
     MoveWindowSucceeded = $moved
     CaptureMethod = $captureMethod
+    CaptureArea = $captureArea
     MostlyBlack = $mostlyBlack
 } | ConvertTo-Json -Compress
 '''
@@ -430,6 +463,7 @@ def run_powershell_capture(
     title_contains: str = "",
     timeout_seconds: int = 20,
     prefer_print_window: bool = False,
+    capture_client_area: bool = False,
 ) -> str:
     ps = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
     if not ps:
@@ -457,6 +491,8 @@ def run_powershell_capture(
         args += ["-TitleContains", title_contains]
     if prefer_print_window:
         args += ["-PreferPrintWindow", "1"]
+    if capture_client_area:
+        args += ["-CaptureClientArea", "1"]
 
     completed = subprocess.run(args, text=True, capture_output=True)
     if completed.returncode != 0:
@@ -794,6 +830,7 @@ def launch_cmd(args: argparse.Namespace) -> None:
         pid=proc.pid,
         title_contains=run_id,
         timeout_seconds=args.capture_timeout,
+        capture_client_area=True,
     )
     evidence_paths = copy_evidence_paths(outfile, out_dir, args)
     completed = close_process_tree(proc.pid)
