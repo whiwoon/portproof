@@ -464,6 +464,8 @@ def run_powershell_capture(
     timeout_seconds: int = 20,
     prefer_print_window: bool = False,
     capture_client_area: bool = False,
+    window_width: int = 1200,
+    window_height: int = 720,
 ) -> str:
     ps = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
     if not ps:
@@ -482,6 +484,10 @@ def run_powershell_capture(
         str(outfile),
         "-TimeoutSeconds",
         str(timeout_seconds),
+        "-WindowWidth",
+        str(window_width),
+        "-WindowHeight",
+        str(window_height),
     ]
     if pid:
         args += ["-ProcessId", str(pid)]
@@ -729,6 +735,8 @@ def launch_edge(args: argparse.Namespace) -> None:
                 title_contains=args.title_contains,
                 timeout_seconds=args.capture_timeout,
                 prefer_print_window=True,
+                window_width=int(EDGE_SIZE.split(",")[0]),
+                window_height=int(EDGE_SIZE.split(",")[1]),
             )
             if capture_result_is_mostly_black(result) or saved_png_is_mostly_black(outfile):
                 raise RuntimeError("GUI Edge capture was mostly black; falling back to Edge headless screenshot.")
@@ -793,7 +801,7 @@ def launch_cmd(args: argparse.Namespace) -> None:
             [
                 "@echo off",
                 f"title {title}",
-                "mode con cols=140 lines=40",
+                "mode con cols=132 lines=36",
                 f"echo Evidence title: {title}",
                 f"echo Running {args.service or 'service'} evidence check...",
                 "echo.",
