@@ -759,8 +759,7 @@ def launch_cmd(args: argparse.Namespace) -> None:
                 f"title {title}",
                 "mode con cols=140 lines=40",
                 f"echo Evidence title: {title}",
-                "echo Command:",
-                f'type "{command_file}"',
+                f"echo Running {args.service or 'service'} evidence check...",
                 "echo.",
                 args.command,
                 'set "SPIKE_RC=%ERRORLEVEL%"',
@@ -914,8 +913,14 @@ def command_for_service(host: str, port: str, service: str, commands_dir: Path) 
     if service == "smb":
         ps = rf"""
 Write-Output 'SMB share listing:'
-$netView = cmd.exe /c net view \\{host} 2>&1
-$netView | ForEach-Object {{ Write-Output $_ }}
+$netView = @(& $env:ComSpec /d /c "net view \\{host} 2>&1")
+$netViewExit = $LASTEXITCODE
+if ($netViewExit -ne 0) {{
+    Write-Output ('net view failed with exit code ' + $netViewExit + '.')
+    $netView | Select-Object -First 6 | ForEach-Object {{ Write-Output $_ }}
+}} else {{
+    $netView | ForEach-Object {{ Write-Output $_ }}
+}}
 $share = $null
 foreach ($line in $netView) {{
     if ($line -match '^\s*(\S+)\s+Disk\s+') {{ $share = $Matches[1]; break }}
