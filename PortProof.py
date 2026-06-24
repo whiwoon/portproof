@@ -1009,35 +1009,99 @@ def extract_screenshot_path(output: str) -> str:
     return ""
 
 
+REPORT_FIELDS = [
+    "host",
+    "port",
+    "protocol",
+    "service",
+    "nmap_service",
+    "product",
+    "version",
+    "status",
+    "capture_method",
+    "screenshot",
+    "notes",
+]
+REPORT_LABELS = ["Host", "Port", "Protocol", "Service", "Nmap Service", "Product", "Version", "Status", "Capture Method", "Screenshot", "Notes"]
+LABEL_TO_FIELD = dict(zip(REPORT_LABELS, REPORT_FIELDS))
+
+
+def normalize_report_row(row: dict) -> dict:
+    normalized = {field: str(row.get(field, "") or "") for field in REPORT_FIELDS}
+    normalized["service"] = normalize_service(normalized.get("service", ""), normalized.get("port", ""), "")
+    if not normalized["protocol"]:
+        normalized["protocol"] = "tcp"
+    if not normalized["status"]:
+        normalized["status"] = "pending"
+    return normalized
+
+
 def write_csv(path: Path, rows: list[dict]) -> None:
     import csv
 
-    fields = [
-        "host",
-        "port",
-        "protocol",
-        "service",
-        "nmap_service",
-        "product",
-        "version",
-        "status",
-        "capture_method",
-        "screenshot",
-        "notes",
-    ]
     with path.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
+        writer = csv.DictWriter(f, fieldnames=REPORT_FIELDS)
         writer.writeheader()
         for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fields})
+            writer.writerow({field: row.get(field, "") for field in REPORT_FIELDS})
+
+
+def read_csv_report(path: Path) -> list[dict]:
+    import csv
+
+    with path.open("r", newline="", encoding="utf-8-sig") as f:
+        return [normalize_report_row(row) for row in csv.DictReader(f)]
+
+
+def read_xlsx_report(path: Path) -> list[dict]:
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path) as z:
+        xml = z.read("xl/worksheets/sheet1.xml")
+    root = ET.fromstring(xml)
+    parsed_rows: list[list[str]] = []
+    for row_el in root.findall(".//x:sheetData/x:row", ns):
+        values: list[str] = []
+        for cell_el in row_el.findall("x:c", ns):
+            text_el = cell_el.find("x:is/x:t", ns)
+            values.append(text_el.text if text_el is not None and text_el.text is not None else "")
+        parsed_rows.append(values)
+    if not parsed_rows:
+        return []
+    headers = [LABEL_TO_FIELD.get(value, value) for value in parsed_rows[0]]
+    rows = []
+    for values in parsed_rows[1:]:
+        rows.append(normalize_report_row(dict(zip(headers, values))))
+    return rows
+
+
+def report_paths(out_dir: Path) -> tuple[Path, Path]:
+    return out_dir / "portproof-results.csv", out_dir / "portproof-results.xlsx"
+
+
+def write_reports(out_dir: Path, rows: list[dict]) -> None:
+    csv_path, xlsx_path = report_paths(out_dir)
+    write_csv(csv_path, rows)
+    write_xlsx(xlsx_path, rows)
+
+
+def screenshot_exists(out_dir: Path, screenshot: str) -> bool:
+    if not screenshot:
+        return False
+    path = Path(str(screenshot).replace("\\", os.sep))
+    if not path.is_absolute():
+        path = out_dir / path
+    return path.exists()
 
 
 def write_xlsx(path: Path, rows: list[dict]) -> None:
     import zipfile
     from html import escape
 
-    fields = ["host", "port", "protocol", "service", "nmap_service", "product", "version", "status", "capture_method", "screenshot", "notes"]
-    labels = ["Host", "Port", "Protocol", "Service", "Nmap Service", "Product", "Version", "Status", "Capture Method", "Screenshot", "Notes"]
+    fields = REPORT_FIELDS
+    labels = REPORT_LABELS
 
     def cell(value: str) -> str:
         return f'<c t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
@@ -1074,7 +1138,7 @@ def move_command_artifacts(out_dir: Path, commands_dir: Path) -> None:
     if not work.exists():
         return
     commands_dir.mkdir(parents=True, exist_ok=True)
-    for pattern in ("*.cmd", "*.command.txt"):
+    for pattern in ("*.cmd", "*.command.txt", "*.ps1"):
         for src in work.glob(pattern):
             dst = commands_dir / src.name
             if dst.exists():
@@ -1082,97 +1146,135 @@ def move_command_artifacts(out_dir: Path, commands_dir: Path) -> None:
             shutil.move(str(src), str(dst))
 
 
-def run_portproof(nmap_xml: Path) -> int:
-    nmap_xml = nmap_xml.expanduser().resolve()
-    if not nmap_xml.exists():
-        print(f"Nmap XML file not found: {nmap_xml}", file=sys.stderr)
+def load_input_rows(input_path: Path) -> tuple[Path, list[dict], str]:
+    suffix = input_path.suffix.lower()
+    if suffix == ".xml":
+        out_dir = output_root_for(input_path)
+        rows = [
+            normalize_report_row(
+                {
+                    **target,
+                    "status": "pending",
+                    "capture_method": "",
+                    "screenshot": "",
+                    "notes": "",
+                }
+            )
+            for target in parse_nmap_xml(input_path)
+        ]
+        return out_dir, rows, "xml"
+    if suffix == ".csv":
+        return input_path.parent, read_csv_report(input_path), "csv"
+    if suffix == ".xlsx":
+        return input_path.parent, read_xlsx_report(input_path), "xlsx"
+    raise ValueError("input must be an Nmap .xml file or an existing PortProof .csv/.xlsx report")
+
+
+def capture_row(out_dir: Path, commands_dir: Path, row: dict) -> tuple[dict, str, int]:
+    host = row["host"]
+    port = row["port"]
+    service = row["service"]
+    updated = {**row, "notes": ""}
+    if service in BROWSER_SERVICES:
+        argv = [
+            "edge",
+            "--url",
+            service_url(host, port, service),
+            "--out",
+            str(out_dir),
+            "--host",
+            host,
+            "--port",
+            port,
+            "--service",
+            service,
+            "--wait",
+            "12",
+            "--capture-timeout",
+            "30",
+        ]
+    else:
+        argv = [
+            "cmd",
+            "--title",
+            f"{service}-{port}",
+            "--command",
+            command_for_service(host, port, service, commands_dir),
+            "--out",
+            str(out_dir),
+            "--host",
+            host,
+            "--port",
+            port,
+            "--service",
+            service,
+            "--wait",
+            "8" if service != "smb" else "15",
+            "--capture-timeout",
+            "25",
+        ]
+    rc, output = run_capture_subcommand(argv)
+    shot = extract_screenshot_path(output)
+    updated["status"] = "captured" if rc == 0 and shot else "failed"
+    updated["screenshot"] = str(Path(shot).relative_to(out_dir)) if shot else ""
+    updated["capture_method"] = ""
+    for line in output.splitlines():
+        if line.startswith("{") and "CaptureMethod" in line:
+            try:
+                updated["capture_method"] = json.loads(line).get("CaptureMethod", "")
+            except Exception:
+                pass
+    if rc != 0:
+        updated["notes"] = "capture command failed; see logs/portproof-run-log.txt"
+    return updated, output, rc
+
+
+def run_portproof(input_file: Path) -> int:
+    input_file = input_file.expanduser().resolve()
+    if not input_file.exists():
+        print(f"Input file not found: {input_file}", file=sys.stderr)
         return 2
 
-    out_dir = output_root_for(nmap_xml)
+    try:
+        out_dir, rows, input_kind = load_input_rows(input_file)
+    except Exception as exc:
+        print(f"Could not read input: {exc}", file=sys.stderr)
+        return 2
+
     evidence_dir = out_dir / "evidence"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
     commands_dir = out_dir / "command-artifacts"
     logs_dir = out_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     commands_dir.mkdir(parents=True, exist_ok=True)
     consolidated_log = logs_dir / "portproof-run-log.txt"
-    consolidated_log.write_text(f"PortProof run: {timestamp()}\nNmap XML: {nmap_xml}\nOutput: {out_dir}\n", encoding="utf-8")
-    shutil.copy2(nmap_xml, out_dir / nmap_xml.name)
+    log_header = f"PortProof run: {timestamp()}\nInput: {input_file}\nInput kind: {input_kind}\nOutput: {out_dir}\n"
+    if consolidated_log.exists():
+        with consolidated_log.open("a", encoding="utf-8", errors="replace") as f:
+            f.write("\n" + log_header)
+    else:
+        consolidated_log.write_text(log_header, encoding="utf-8")
+    if input_kind == "xml":
+        shutil.copy2(input_file, out_dir / input_file.name)
 
-    targets = parse_nmap_xml(nmap_xml)
-    rows: list[dict] = []
-    append_log(consolidated_log, "parsed-targets", json.dumps(targets, indent=2))
+    write_reports(out_dir, rows)
+    append_log(consolidated_log, "loaded-targets", json.dumps(rows, indent=2))
 
-    for target in targets:
-        host = target["host"]
-        port = target["port"]
-        service = target["service"]
-        base = {
-            **target,
-            "status": "pending",
-            "capture_method": "",
-            "screenshot": "",
-            "notes": "",
-        }
-        if service in BROWSER_SERVICES:
-            argv = [
-                "edge",
-                "--url",
-                service_url(host, port, service),
-                "--out",
-                str(out_dir),
-                "--host",
-                host,
-                "--port",
-                port,
-                "--service",
-                service,
-                "--wait",
-                "12",
-                "--capture-timeout",
-                "30",
-            ]
-        else:
-            title = f"{service}-{port}"
-            argv = [
-                "cmd",
-                "--title",
-                title,
-                "--command",
-                command_for_service(host, port, service, commands_dir),
-                "--out",
-                str(out_dir),
-                "--host",
-                host,
-                "--port",
-                port,
-                "--service",
-                service,
-                "--wait",
-                "8" if service != "smb" else "15",
-                "--capture-timeout",
-                "25",
-            ]
-        rc, output = run_capture_subcommand(argv)
-        append_log(consolidated_log, f"{host}:{port}/{service}", output)
-        shot = extract_screenshot_path(output)
-        base["status"] = "captured" if rc == 0 and shot else "failed"
-        base["screenshot"] = str(Path(shot).relative_to(out_dir)) if shot else ""
-        for line in output.splitlines():
-            if line.startswith("{") and "CaptureMethod" in line:
-                try:
-                    base["capture_method"] = json.loads(line).get("CaptureMethod", "")
-                except Exception:
-                    pass
-        if rc != 0:
-            base["notes"] = "capture command failed; see logs/portproof-run-log.txt"
-        rows.append(base)
+    for index, row in enumerate(rows):
+        if row.get("status") == "captured" and screenshot_exists(out_dir, row.get("screenshot", "")):
+            append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "skipped: existing screenshot is present")
+            continue
+        updated, output, rc = capture_row(out_dir, commands_dir, row)
+        rows[index] = updated
+        append_log(consolidated_log, f"{updated['host']}:{updated['port']}/{updated['service']}", output)
         move_command_artifacts(out_dir, commands_dir)
         cleanup_runtime_dirs(out_dir)
+        write_reports(out_dir, rows)
 
-    write_csv(out_dir / "portproof-results.csv", rows)
-    write_xlsx(out_dir / "portproof-results.xlsx", rows)
     cleanup_runtime_dirs(out_dir)
     move_command_artifacts(out_dir, commands_dir)
+    write_reports(out_dir, rows)
 
     print(f"output_dir={out_dir}")
     print(f"csv={out_dir / 'portproof-results.csv'}")
@@ -1216,16 +1318,16 @@ def build_internal_parser() -> argparse.ArgumentParser:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="PortProof.py",
-        description="Create port evidence screenshots and CSV/Excel reports from an Nmap XML file.",
+        description="Create or resume port evidence screenshots and CSV/Excel reports from Nmap XML, CSV, or XLSX input.",
     )
-    parser.add_argument("nmap_xml", help="Nmap XML file to process.")
+    parser.add_argument("input_file", help="Nmap XML file, or existing PortProof CSV/XLSX report to resume.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return run_portproof(Path(args.nmap_xml))
+    return run_portproof(Path(args.input_file))
 
 
 if __name__ == "__main__":
