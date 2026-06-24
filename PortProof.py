@@ -913,13 +913,30 @@ def command_for_service(host: str, port: str, service: str, commands_dir: Path) 
     if service == "smb":
         ps = rf"""
 Write-Output 'SMB share listing:'
-$netView = @(& $env:ComSpec /d /c "net view \\{host} 2>&1")
-$netViewExit = $LASTEXITCODE
-if ($netViewExit -ne 0) {{
-    Write-Output ('net view failed with exit code ' + $netViewExit + '.')
-    $netView | Select-Object -First 6 | ForEach-Object {{ Write-Output $_ }}
+$netViewTimeoutSeconds = 8
+$netViewJob = Start-Job -ScriptBlock {{
+    param($TargetHost)
+    $output = @(& $env:ComSpec /d /c "net view \\$TargetHost 2>&1")
+    [pscustomobject]@{{ Output = $output; ExitCode = $LASTEXITCODE }}
+}} -ArgumentList '{host}'
+$netViewCompleted = Wait-Job -Job $netViewJob -Timeout $netViewTimeoutSeconds
+$netView = @()
+$netViewExit = $null
+if ($netViewCompleted) {{
+    $netViewResult = Receive-Job -Job $netViewJob
+    $netView = @($netViewResult.Output)
+    $netViewExit = $netViewResult.ExitCode
+    Remove-Job -Job $netViewJob -Force | Out-Null
+    if ($netViewExit -ne 0) {{
+        Write-Output ('net view failed with exit code ' + $netViewExit + '.')
+        $netView | Select-Object -First 6 | ForEach-Object {{ Write-Output $_ }}
+    }} else {{
+        $netView | ForEach-Object {{ Write-Output $_ }}
+    }}
 }} else {{
-    $netView | ForEach-Object {{ Write-Output $_ }}
+    Stop-Job -Job $netViewJob -ErrorAction SilentlyContinue | Out-Null
+    Remove-Job -Job $netViewJob -Force -ErrorAction SilentlyContinue | Out-Null
+    Write-Output ('net view timed out after ' + $netViewTimeoutSeconds + ' seconds.')
 }}
 $share = $null
 foreach ($line in $netView) {{
