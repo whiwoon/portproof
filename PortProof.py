@@ -225,7 +225,7 @@ function Get-MatchingWindow {
 
 $window = Get-MatchingWindow -WantedPid $ProcessId -WantedProcessName $ProcessName -WantedTitle $TitleContains -Timeout $TimeoutSeconds
 if ($null -eq $window) {
-    throw "No matching visible top-level window found. pid=$ProcessId process=$ProcessName titleContains='$TitleContains'"
+    throw "일치하는 표시 상태의 최상위 창을 찾지 못했습니다. pid=$ProcessId process=$ProcessName titleContains='$TitleContains'"
 }
 
 $rect = New-Object WinCapNative+RECT
@@ -243,7 +243,7 @@ if ($SetForeground -ne 0) {
 $width = $rect.Right - $rect.Left
 $height = $rect.Bottom - $rect.Top
 if ($width -le 0 -or $height -le 0) {
-    throw "Matched window has invalid size: ${width}x${height}"
+    throw "일치한 창의 크기가 올바르지 않습니다: ${width}x${height}"
 }
 
 $captureArea = "window"
@@ -404,8 +404,16 @@ def write_capture_helper(out_dir: Path) -> Path:
     helper_dir = out_dir / "_work" / "_helpers"
     helper_dir.mkdir(parents=True, exist_ok=True)
     helper = helper_dir / "capture_window.ps1"
-    helper.write_text(CAPTURE_PS1, encoding="utf-8")
+    helper.write_text(CAPTURE_PS1, encoding="utf-8-sig")
     return helper
+
+
+def configure_text_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            getattr(stream, "reconfigure")(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def metadata_is_complete(args: argparse.Namespace) -> bool:
@@ -429,8 +437,7 @@ def primary_evidence_path(out_dir: Path, args: argparse.Namespace, run_id: str) 
         return out_dir / filename
 
     host = sanitize_evidence_part(args.host)
-    service = sanitize_evidence_part(args.service)
-    return out_dir / "evidence" / "by_host" / host / service / filename
+    return out_dir / "evidence" / "by_host" / host / filename
 
 
 def copy_evidence_paths(primary: Path, out_dir: Path, args: argparse.Namespace) -> list[Path]:
@@ -441,8 +448,8 @@ def copy_evidence_paths(primary: Path, out_dir: Path, args: argparse.Namespace) 
     service = sanitize_evidence_part(args.service)
     filename = primary.name
     paths = [
-        out_dir / "evidence" / "by_host" / host / service / filename,
-        out_dir / "evidence" / "by_service" / service / host / filename,
+        out_dir / "evidence" / "by_host" / host / filename,
+        out_dir / "evidence" / "by_service" / service / filename,
     ]
 
     for path in paths:
@@ -469,7 +476,7 @@ def run_powershell_capture(
 ) -> str:
     ps = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
     if not ps:
-        raise RuntimeError("Could not find powershell.exe or pwsh.exe on PATH.")
+        raise RuntimeError("PATH에서 powershell.exe 또는 pwsh.exe를 찾지 못했습니다.")
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
 
@@ -503,7 +510,7 @@ def run_powershell_capture(
     completed = subprocess.run(args, text=True, capture_output=True)
     if completed.returncode != 0:
         raise RuntimeError(
-            "PowerShell capture failed.\n"
+            "PowerShell 캡처에 실패했습니다.\n"
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}"
         )
@@ -525,7 +532,7 @@ def find_edge() -> Path:
         if candidate and Path(candidate).exists():
             return Path(candidate)
 
-    raise RuntimeError("Could not find msedge.exe in common install paths or PATH.")
+    raise RuntimeError("일반 설치 경로와 PATH에서 msedge.exe를 찾지 못했습니다.")
 
 
 def close_process_tree(pid: int) -> subprocess.CompletedProcess[str]:
@@ -601,12 +608,12 @@ def run_edge_headless_capture(edge: Path, args: argparse.Namespace, user_data_di
     )
     if completed.returncode != 0:
         raise RuntimeError(
-            "Edge headless screenshot fallback failed.\n"
+            "Edge 헤드리스 스크린샷 대체 캡처에 실패했습니다.\n"
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}"
         )
     if not outfile.exists() or outfile.stat().st_size <= 0:
-        raise RuntimeError(f"Edge headless screenshot fallback did not create a non-empty file: {outfile}")
+        raise RuntimeError(f"Edge 헤드리스 스크린샷 대체 캡처가 비어 있지 않은 파일을 만들지 못했습니다: {outfile}")
     return json.dumps(
         {
             "OutFile": str(outfile),
@@ -623,7 +630,7 @@ def run_edge_headless_capture(edge: Path, args: argparse.Namespace, user_data_di
 
 def sanitize_cmd_title(value: str) -> str:
     safe = "".join("_" if char in '&|<>^"\r\n' else char for char in value)
-    return safe.strip() or "Evidence"
+    return safe.strip() or "증거"
 
 
 def write_json_if_missing(path: Path, data: dict) -> None:
@@ -669,7 +676,7 @@ def seed_edge_profile(user_data_dir: Path) -> None:
             "profile": {
                 "exited_cleanly": True,
                 "exit_type": "Normal",
-                "name": "Evidence Capture",
+                "name": "증거 캡처",
             },
             "signin": {
                 "allowed": False,
@@ -739,7 +746,7 @@ def launch_edge(args: argparse.Namespace) -> None:
                 window_height=int(EDGE_SIZE.split(",")[1]),
             )
             if capture_result_is_mostly_black(result) or saved_png_is_mostly_black(outfile):
-                raise RuntimeError("GUI Edge capture was mostly black; falling back to Edge headless screenshot.")
+                raise RuntimeError("Edge GUI 캡처가 대부분 검은 화면입니다. Edge 헤드리스 스크린샷으로 대체합니다.")
         except RuntimeError as exc:
             gui_capture_error = str(exc)
             completed = close_process_tree(proc.pid)
@@ -800,20 +807,21 @@ def launch_cmd(args: argparse.Namespace) -> None:
         "\n".join(
             [
                 "@echo off",
+                "chcp 65001 >nul",
                 f"title {title}",
                 "mode con cols=132 lines=36",
-                f"echo Evidence title: {title}",
-                f"echo Running {args.service or 'service'} evidence check...",
+                f"echo 증거 제목: {title}",
+                f"echo {args.service or '서비스'} 증거를 확인하는 중...",
                 "echo.",
                 args.command,
                 'set "SPIKE_RC=%ERRORLEVEL%"',
                 "echo.",
-                "echo Exit code: %SPIKE_RC%",
-                "echo Screenshot pending. This window may be closed after capture.",
+                "echo 종료 코드: %SPIKE_RC%",
+                "echo 스크린샷 캡처 대기 중입니다. 캡처 후 이 창은 닫힐 수 있습니다.",
                 "",
             ]
         ),
-        encoding="utf-8",
+        encoding="utf-8-sig",
     )
 
     creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -827,7 +835,7 @@ def launch_cmd(args: argparse.Namespace) -> None:
         print(f"title={title}")
         print(f"runner={runner}")
         print(f"command_file={command_file}")
-        print(f"skipped_reason=required evidence marker was not created: {marker}")
+        print(f"skipped_reason=필수 증거 확인 표시가 생성되지 않았습니다: {marker}")
         print("cmd_close_attempted=true")
         print(f"cmd_close_returncode={completed.returncode}")
         return
@@ -960,7 +968,8 @@ def powershell_file_command(commands_dir: Path, host: str, port: str, service: s
     commands_dir.mkdir(parents=True, exist_ok=True)
     helper_name = f"{sanitize_evidence_part(host)}_{sanitize_evidence_part(port)}_{sanitize_evidence_part(service)}.ps1"
     helper_path = commands_dir / helper_name
-    helper_path.write_text(script.rstrip() + "\n", encoding="utf-8-sig")
+    prelude = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding"
+    helper_path.write_text(prelude + "\n" + script.rstrip() + "\n", encoding="utf-8-sig")
     return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{helper_path}"'
 
 
@@ -978,13 +987,13 @@ def command_for_service(host: str, port: str, service: str, commands_dir: Path, 
             f"-p {port} root@{host}"
         )
     if service == "telnet":
-        ps = f"$c=New-Object Net.Sockets.TcpClient; $c.ReceiveTimeout=5000; $c.Connect('{host}',{port}); 'TELNET TCP {port} connected'; $s=$c.GetStream(); $deadline=(Get-Date).AddSeconds(5); while(-not $s.DataAvailable -and (Get-Date) -lt $deadline){{Start-Sleep -Milliseconds 100}}; if($s.DataAvailable){{$b=New-Object byte[] 1024; $n=$s.Read($b,0,$b.Length); [Text.Encoding]::ASCII.GetString($b,0,$n)}} else {{'No login prompt or banner before timeout'}}; Start-Sleep -Seconds 60; $c.Close()"
+        ps = f"$c=New-Object Net.Sockets.TcpClient; $c.ReceiveTimeout=5000; $c.Connect('{host}',{port}); 'TELNET TCP {port} 연결됨'; $s=$c.GetStream(); $deadline=(Get-Date).AddSeconds(5); while(-not $s.DataAvailable -and (Get-Date) -lt $deadline){{Start-Sleep -Milliseconds 100}}; if($s.DataAvailable){{$b=New-Object byte[] 1024; $n=$s.Read($b,0,$b.Length); [Text.Encoding]::ASCII.GetString($b,0,$n)}} else {{'시간 안에 로그인 프롬프트나 배너가 표시되지 않았습니다'}}; Start-Sleep -Seconds 60; $c.Close()"
         return powershell_file_command(commands_dir, host, port, service, ps)
     if service == "ftp":
         marker = str(marker_file) if marker_file else ""
         ps = rf"""
 $marker = '{marker}'
-Write-Output 'FTP anonymous file listing:'
+Write-Output 'FTP 익명 파일 목록:'
 $output = @(& curl.exe --connect-timeout 10 --max-time 30 --user anonymous:anonymous --list-only ftp://{host}:{port}/ 2>&1)
 $exit = $LASTEXITCODE
 $listing = @($output | Where-Object {{ $_ -and ($_ -notmatch '^\s*%') }})
@@ -993,7 +1002,7 @@ if ($exit -eq 0 -and $listing.Count -gt 0) {{
     if ($marker) {{ Set-Content -Path $marker -Value 'ready' -Encoding ASCII }}
     Start-Sleep -Seconds 60
 }} else {{
-    Write-Output 'FTP anonymous listing unavailable; skipping evidence capture.'
+    Write-Output 'FTP 익명 목록을 확인할 수 없어 증거 캡처를 건너뜁니다.'
     $output | Select-Object -First 6 | ForEach-Object {{ Write-Output $_ }}
     Start-Sleep -Seconds 3
 }}
@@ -1003,7 +1012,7 @@ if ($exit -eq 0 -and $listing.Count -gt 0) {{
         marker = str(marker_file) if marker_file else ""
         ps = rf"""
 $marker = '{marker}'
-Write-Output 'SMB share listing:'
+Write-Output 'SMB 공유 목록:'
 $netViewTimeoutSeconds = 8
 $netViewJob = Start-Job -ScriptBlock {{
     param($TargetHost)
@@ -1019,7 +1028,7 @@ if ($netViewCompleted) {{
     $netViewExit = $netViewResult.ExitCode
     Remove-Job -Job $netViewJob -Force | Out-Null
     if ($netViewExit -ne 0) {{
-        Write-Output ('net view failed with exit code ' + $netViewExit + '.')
+        Write-Output ('net view가 종료 코드 ' + $netViewExit + '로 실패했습니다.')
         $netView | Select-Object -First 6 | ForEach-Object {{ Write-Output $_ }}
     }} else {{
         $netView | ForEach-Object {{ Write-Output $_ }}
@@ -1027,7 +1036,7 @@ if ($netViewCompleted) {{
 }} else {{
     Stop-Job -Job $netViewJob -ErrorAction SilentlyContinue | Out-Null
     Remove-Job -Job $netViewJob -Force -ErrorAction SilentlyContinue | Out-Null
-    Write-Output ('net view timed out after ' + $netViewTimeoutSeconds + ' seconds.')
+    Write-Output ('net view가 ' + $netViewTimeoutSeconds + '초 안에 끝나지 않았습니다.')
 }}
 $share = $null
 foreach ($line in $netView) {{
@@ -1040,14 +1049,14 @@ if (-not $share) {{
         $localIps = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress)
         if ('{host}' -in ($localNames + $localIps)) {{
             $localShare = Get-SmbShare -Name PortProofShare -ErrorAction Stop
-            if ($localShare) {{ $share = $localShare.Name; Write-Output 'Local SMB share detected by Get-SmbShare: PortProofShare' }}
+            if ($localShare) {{ $share = $localShare.Name; Write-Output 'Get-SmbShare로 로컬 SMB 공유를 확인했습니다: PortProofShare' }}
         }}
     }} catch {{}}
 }}
 if ($share) {{
     Write-Output ''
     $unc = '\\{host}\' + $share
-    Write-Output ('SMB file listing: ' + $unc)
+    Write-Output ('SMB 파일 목록: ' + $unc)
     try {{
         $items = Get-ChildItem -LiteralPath $unc -Force -ErrorAction Stop
         if ($items) {{
@@ -1055,14 +1064,14 @@ if ($share) {{
             if ($marker) {{ Set-Content -Path $marker -Value 'ready' -Encoding ASCII }}
             Start-Sleep -Seconds 60
         }} else {{
-            Write-Output '(share is accessible but empty)'
+            Write-Output '(공유에 접근할 수 있지만 비어 있습니다)'
         }}
     }} catch {{
-        Write-Output ('SMB file listing failed: ' + $_.Exception.Message)
+        Write-Output ('SMB 파일 목록 확인 실패: ' + $_.Exception.Message)
     }}
 }} else {{
     Write-Output ''
-    Write-Output 'No disk share was listed, so file listing could not be captured.'
+    Write-Output '디스크 공유가 목록에 없어 파일 목록을 캡처할 수 없습니다.'
 }}
 """.strip()
         return powershell_file_command(commands_dir, host, port, service, ps)
@@ -1118,8 +1127,19 @@ REPORT_FIELDS = [
     "screenshot",
     "notes",
 ]
-REPORT_LABELS = ["Host", "Port", "Protocol", "Service", "Nmap Service", "Product", "Version", "Status", "Capture Method", "Screenshot", "Notes"]
-LABEL_TO_FIELD = dict(zip(REPORT_LABELS, REPORT_FIELDS))
+REPORT_LABELS = ["호스트", "포트", "프로토콜", "서비스", "Nmap 서비스", "제품", "버전", "상태", "캡처 방식", "스크린샷", "메모"]
+LEGACY_REPORT_LABELS = ["Host", "Port", "Protocol", "Service", "Nmap Service", "Product", "Version", "Status", "Capture Method", "Screenshot", "Notes"]
+LABEL_TO_FIELD = {**dict(zip(REPORT_LABELS, REPORT_FIELDS)), **dict(zip(LEGACY_REPORT_LABELS, REPORT_FIELDS))}
+STATUS_LABELS = {
+    "pending": "대기",
+    "captured": "캡처됨",
+    "skipped": "건너뜀",
+    "failed": "실패",
+}
+
+
+def status_label(status: str) -> str:
+    return STATUS_LABELS.get(status, status)
 
 
 def normalize_report_row(row: dict) -> dict:
@@ -1307,7 +1327,7 @@ def load_input_rows(input_path: Path, filters: dict[str, set[str]]) -> tuple[Pat
         return input_path.parent, read_csv_report(input_path), "csv"
     if suffix == ".xlsx":
         return input_path.parent, read_xlsx_report(input_path), "xlsx"
-    raise ValueError("input must be an Nmap .xml file or an existing PortProof .csv/.xlsx report")
+    raise ValueError("입력 파일은 Nmap .xml 파일 또는 기존 PortProof .csv/.xlsx 보고서여야 합니다")
 
 
 def capture_row(out_dir: Path, commands_dir: Path, row: dict) -> tuple[dict, str, int]:
@@ -1364,7 +1384,7 @@ def capture_row(out_dir: Path, commands_dir: Path, row: dict) -> tuple[dict, str
     if "skipped_reason=" in output and not shot:
         updated["status"] = "skipped"
         updated["screenshot"] = ""
-        updated["notes"] = "capture skipped because required evidence was not visible"
+        updated["notes"] = "필수 증거가 보이지 않아 캡처를 건너뜀"
         return updated, output, rc
     updated["status"] = "captured" if rc == 0 and shot else "failed"
     updated["screenshot"] = str(Path(shot).relative_to(out_dir)) if shot else ""
@@ -1376,7 +1396,7 @@ def capture_row(out_dir: Path, commands_dir: Path, row: dict) -> tuple[dict, str
             except Exception:
                 pass
     if rc != 0:
-        updated["notes"] = "capture command failed; see logs/portproof-run-log.txt"
+        updated["notes"] = "캡처 명령 실패; logs/portproof-run-log.txt 확인"
     return updated, output, rc
 
 
@@ -1384,13 +1404,13 @@ def run_portproof(input_file: Path, filters: dict[str, set[str]] | None = None) 
     filters = filters or {"port": set(), "ip": set(), "service": set()}
     input_file = input_file.expanduser().resolve()
     if not input_file.exists():
-        print(f"Input file not found: {input_file}", file=sys.stderr)
+        print(f"입력 파일을 찾지 못했습니다: {input_file}", file=sys.stderr)
         return 2
 
     try:
         out_dir, rows, input_kind = load_input_rows(input_file, filters)
     except Exception as exc:
-        print(f"Could not read input: {exc}", file=sys.stderr)
+        print(f"입력 파일을 읽지 못했습니다: {exc}", file=sys.stderr)
         return 2
 
     evidence_dir = out_dir / "evidence"
@@ -1401,7 +1421,7 @@ def run_portproof(input_file: Path, filters: dict[str, set[str]] | None = None) 
     logs_dir.mkdir(parents=True, exist_ok=True)
     commands_dir.mkdir(parents=True, exist_ok=True)
     consolidated_log = logs_dir / "portproof-run-log.txt"
-    log_header = f"PortProof run: {timestamp()}\nInput: {input_file}\nInput kind: {input_kind}\nOutput: {out_dir}\nFilters: {json.dumps({k: sorted(v) for k, v in filters.items()})}\n"
+    log_header = f"PortProof 실행: {timestamp()}\n입력: {input_file}\n입력 종류: {input_kind}\n출력: {out_dir}\n필터: {json.dumps({k: sorted(v) for k, v in filters.items()}, ensure_ascii=False)}\n"
     if consolidated_log.exists():
         with consolidated_log.open("a", encoding="utf-8", errors="replace") as f:
             f.write("\n" + log_header)
@@ -1411,27 +1431,27 @@ def run_portproof(input_file: Path, filters: dict[str, set[str]] | None = None) 
         shutil.copy2(input_file, out_dir / input_file.name)
 
     write_reports(out_dir, rows)
-    append_log(consolidated_log, "loaded-targets", json.dumps(rows, indent=2))
+    append_log(consolidated_log, "불러온 대상", json.dumps(rows, indent=2, ensure_ascii=False))
 
     eligible_total = sum(1 for row in rows if input_kind == "xml" or row_matches_filters(row, filters))
     progress_index = 0
-    print(f"PortProof targets: {eligible_total}", flush=True)
+    print(f"PortProof 대상: {eligible_total}개", flush=True)
 
     for index, row in enumerate(rows):
         if input_kind in {"csv", "xlsx"} and not row_matches_filters(row, filters):
             if has_active_filters(filters):
-                append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "skipped: does not match requested filters")
+                append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "건너뜀: 요청한 필터와 일치하지 않음")
             continue
         progress_index += 1
         label = f"{row['host']}:{row['port']}/{row['service']}"
         if row.get("status") == "captured" and screenshot_exists(out_dir, row.get("screenshot", "")):
-            print(f"[{progress_index}/{eligible_total}] SKIP existing {label}", flush=True)
-            append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "skipped: existing screenshot is present")
+            print(f"[{progress_index}/{eligible_total}] 기존 스크린샷 사용 {label}", flush=True)
+            append_log(consolidated_log, f"{row['host']}:{row['port']}/{row['service']}", "건너뜀: 기존 스크린샷이 있음")
             continue
-        print(f"[{progress_index}/{eligible_total}] CAPTURE start {label}", flush=True)
+        print(f"[{progress_index}/{eligible_total}] 캡처 시작 {label}", flush=True)
         updated, output, rc = capture_row(out_dir, commands_dir, row)
         rows[index] = updated
-        print(f"[{progress_index}/{eligible_total}] {updated['status'].upper()} {label}", flush=True)
+        print(f"[{progress_index}/{eligible_total}] {status_label(updated['status'])} {label}", flush=True)
         append_log(consolidated_log, f"{updated['host']}:{updated['port']}/{updated['service']}", output)
         move_command_artifacts(out_dir, commands_dir)
         cleanup_runtime_dirs(out_dir)
@@ -1441,11 +1461,11 @@ def run_portproof(input_file: Path, filters: dict[str, set[str]] | None = None) 
     move_command_artifacts(out_dir, commands_dir)
     write_reports(out_dir, rows)
 
-    print(f"output_dir={out_dir}")
-    print(f"csv={out_dir / 'portproof-results.csv'}")
-    print(f"xlsx={out_dir / 'portproof-results.xlsx'}")
-    print(f"log={consolidated_log}")
-    print(f"evidence_dir={evidence_dir}")
+    print(f"출력 폴더={out_dir}")
+    print(f"CSV={out_dir / 'portproof-results.csv'}")
+    print(f"XLSX={out_dir / 'portproof-results.xlsx'}")
+    print(f"로그={consolidated_log}")
+    print(f"증거 폴더={evidence_dir}")
     result_rows = rows if input_kind == "xml" or not has_active_filters(filters) else filter_rows(rows, filters)
     return 0 if all(row["status"] in {"captured", "skipped"} for row in result_rows) else 1
 
@@ -1485,16 +1505,21 @@ def build_internal_parser() -> argparse.ArgumentParser:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="PortProof.py",
-        description="Create or resume port evidence screenshots and CSV/Excel reports from Nmap XML, CSV, or XLSX input.",
+        description="Nmap XML, CSV, XLSX 입력에서 포트 증거 스크린샷과 CSV/Excel 보고서를 만들거나 이어서 실행합니다.",
+        add_help=False,
     )
-    parser.add_argument("input_file", help="Nmap XML file, or existing PortProof CSV/XLSX report to resume.")
-    parser.add_argument("--ip", action="append", help="Only capture this IP address. Repeat or use comma-separated values.")
-    parser.add_argument("--port", action="append", help="Only capture this port number. Repeat or use comma-separated values.")
-    parser.add_argument("--service", action="append", help="Only capture this service (for example ssh, telnet, ftp, smb, http, https). Repeat or use comma-separated values.")
+    parser._positionals.title = "위치 인자"
+    parser._optionals.title = "선택 옵션"
+    parser.add_argument("-h", "--help", action="help", help="도움말 표시 후 종료")
+    parser.add_argument("input_file", help="Nmap XML 파일 또는 이어서 실행할 기존 PortProof CSV/XLSX 보고서")
+    parser.add_argument("--ip", action="append", help="이 IP 주소만 캡처합니다. 반복 지정하거나 쉼표로 여러 값을 넣을 수 있습니다.")
+    parser.add_argument("--port", action="append", help="이 포트 번호만 캡처합니다. 반복 지정하거나 쉼표로 여러 값을 넣을 수 있습니다.")
+    parser.add_argument("--service", action="append", help="이 서비스만 캡처합니다. 예: ssh, telnet, ftp, smb, http, https. 반복 지정하거나 쉼표로 여러 값을 넣을 수 있습니다.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_text_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     return run_portproof(Path(args.input_file), build_filters(args))

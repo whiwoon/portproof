@@ -7,8 +7,8 @@ It can start from one Nmap XML file, or resume from a previous `portproof-result
 - `portproof-results.csv`
 - `portproof-results.xlsx`
 - `logs/portproof-run-log.txt`
-- `evidence/by_host/.../*.png`
-- `evidence/by_service/.../*.png`
+- `evidence/by_host/<host>/*.png`
+- `evidence/by_service/<service>/*.png`
 - `command-artifacts/` for generated `.cmd` and `.command.txt` files
 
 Temporary browser/helper folders are removed after capture.
@@ -75,8 +75,8 @@ PortProof-YYYYMMDD-HHMMSS/
     *.command.txt
     *.ps1
   evidence/
-    by_host/<host>/<service>/*.png
-    by_service/<service>/<host>/*.png
+    by_host/<host>/*.png
+    by_service/<service>/*.png
 ```
 
 `_edge_profile`, `_edge_headless_profile`, and `_helpers` are runtime-only directories and are deleted after each capture/run.
@@ -87,7 +87,8 @@ PortProof-YYYYMMDD-HHMMSS/
 - Console evidence windows are restored, moved to a predictable position, resized before capture, and the capture JSON records the final rectangle plus whether `MoveWindow` succeeded.
 - HTTP/HTTPS uses Edge. If GUI capture is black in VMware or remote sessions, PortProof falls back to Edge headless screenshots.
 - CSV uses UTF-8 with BOM for easier Excel opening.
-- The main terminal prints progress as `[current/total] CAPTURE start ...`, `CAPTURED ...`, `SKIPPED ...`, or `FAILED ...`.
+- The main terminal prints Korean progress messages such as `[current/total] 캡처 시작 ...`, `캡처됨`, `건너뜀`, or `실패`.
+- The main terminal and evidence windows use Korean operator messages. Generated `.cmd` runners switch to UTF-8 code page (`chcp 65001`) and PowerShell helpers are written with UTF-8 BOM plus UTF-8 output encoding so Korean text does not break in Windows console captures.
 - Console capture windows are closed automatically after capture or skip so evidence runs do not leave many `cmd.exe` windows behind.
 - XLSX is generated with Python standard-library ZIP/XML code, so no `openpyxl` dependency is needed.
 - Commands are intentionally simple and suited for lab proof, not credentialed enumeration.
